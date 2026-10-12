@@ -1,0 +1,319 @@
+
+<!DOCTYPE html>
+<html lang="mr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#10251c">
+<title>My Cricket Scorer</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eef2ef;color:#17251d;
+font-family:Arial,sans-serif}
+header{background:#10251c;color:white;padding:20px 16px}
+header h1{margin:0;font-size:24px}
+header p{margin:6px 0 0;color:#c8ded0}
+main{max-width:650px;margin:auto;padding:14px}
+.card{background:white;border-radius:15px;padding:16px;
+margin-bottom:14px;box-shadow:0 2px 8px #0000000c}
+label{display:block;font-size:14px;margin:10px 0 5px}
+input,select{width:100%;padding:12px;border:1px solid #ccd5cf;
+border-radius:9px;font-size:16px;background:white}
+button{border:0;border-radius:10px;padding:13px 10px;
+font-size:15px;font-weight:bold;cursor:pointer}
+.primary{background:#176b43;color:white;width:100%;margin-top:12px}
+.score{background:#10251c;color:white;text-align:center;
+padding:22px;border-radius:13px}
+.runs{font-size:44px;font-weight:bold}
+.muted{color:#bfd5c8;font-size:14px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.grid button{background:#e1eee6;color:#145536}
+.grid .out{background:#b52335;color:white}
+.grid .extra{background:#f1ead6;color:#614c13}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.actions button{background:#e8ece9}
+.row{display:flex;justify-content:space-between;gap:10px;
+align-items:center}
+small{color:#617067}
+#status{font-size:13px;color:#176b43;overflow-wrap:anywhere}
+#overs{overflow-wrap:anywhere;line-height:1.8}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏏 My Cricket Scorer</h1>
+  <p>Simple • Fast • Live Scorecard</p>
+</header>
+<main>
+<section class="card" id="setup">
+  <h3>Start a Match</h3>
+  <label>Batting Team</label>
+  <input id="batTeam" value="Team A">
+  <label>Bowling Team</label>
+  <input id="bowlTeam" value="Team B">
+  <label>Number of Overs</label>
+  <select id="maxOvers">
+    <option>5</option><option>10</option>
+    <option selected>20</option><option>50</option>
+  </select>
+  <button class="primary" id="start">Start Match</button>
+  <label>Existing Match ID (to open a shared match)</label>
+  <input id="openId" placeholder="Enter Match ID">
+  <button class="primary" id="openMatch">Open Match</button>
+</section>
+
+<section class="card hidden" id="match">
+  <div class="score">
+    <div id="teams">Team A vs Team B</div>
+    <div class="runs" id="total">0/0</div>
+    <div id="oversText">Overs 0.0</div>
+    <p class="muted" id="extrasText">Extras: 0</p>
+    <p id="target"></p>
+  </div>
+  <p id="status">Ready</p>
+  <div class="row">
+    <div><small>STRIKER</small><br><b id="strikerText">Batter 1</b></div>
+    <div><small>NON-STRIKER</small><br><b id="nonText">Batter 2</b></div>
+  </div>
+  <label>Striker name</label><input id="striker" value="Batter 1">
+  <label>Non-striker name</label><input id="non" value="Batter 2">
+  <label>Current bowler</label><input id="bowler" value="Bowler 1">
+  <h3>Add Runs</h3>
+  <div class="grid">
+    <button data-run="0">0</button>
+    <button data-run="1">1 Run</button>
+    <button data-run="2">2 Runs</button>
+    <button data-run="3">3 Runs</button>
+    <button data-run="4">4 Runs</button>
+    <button data-run="6">6 Runs</button>
+    <button class="extra" data-extra="wide">Wide +1</button>
+    <button class="extra" data-extra="noball">No-ball +1</button>
+    <button class="extra" data-extra="bye">Bye +1</button>
+    <button class="extra" data-extra="legbye">Leg bye +1</button>
+    <button class="out" id="wicket">Wicket</button>
+  </div>
+  <h3>Over-by-over</h3>
+  <p id="overs">No balls yet</p>
+  <div class="actions">
+    <button id="undo">↶ Undo</button>
+    <button id="swap">⇄ Change Ends</button>
+    <button id="share">Share Match</button>
+    <button id="refresh">Refresh Score</button>
+  </div>
+  <p><small>Match ID: <span id="matchIdText">—</span></small></p>
+  <button class="primary" id="newMatch">New Match</button>
+</section>
+</main>
+
+<script type="module">
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js";
+import {
+  getDatabase, ref, set, get, onValue, update
+} from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
+import { firebaseConfig } from "./firebase-config.js";
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const $ = id => document.getElementById(id);
+
+let matchId = null;
+let match = null;
+let history = [];
+let stopListen = null;
+let remoteUpdate = false;
+
+function freshMatch(bat,bowl,overs){
+  return {
+    batTeam:bat,bowlTeam:bowl,maxOvers:overs,
+    runs:0,wickets:0,legal:0,extras:0,
+    balls:[],striker:"Batter 1",non:"Batter 2",
+    bowler:"Bowler 1",done:false
+  };
+}
+
+function snapshot(){
+  return JSON.parse(JSON.stringify(match));
+}
+
+function oversText(n){
+  return Math.floor(n/6)+"."+(n%6);
+}
+
+function render(){
+  if(!match)return;
+  $("match").classList.remove("hidden");
+  $("setup").classList.add("hidden");
+  $("teams").textContent=match.batTeam+" vs "+match.bowlTeam;
+  $("total").textContent=match.runs+"/"+match.wickets;
+  $("oversText").textContent="Overs "+oversText(match.legal)+
+    " / "+match.maxOvers;
+  $("extrasText").textContent="Extras: "+match.extras;
+  $("striker").value=match.striker;
+  $("non").value=match.non;
+  $("bowler").value=match.bowler;
+  $("strikerText").textContent=match.striker;
+  $("nonText").textContent=match.non;
+  $("target").textContent=match.target ?
+    "Target: "+match.target : "";
+  $("matchIdText").textContent=matchId||"Local";
+  $("overs").textContent=match.balls.length ?
+    match.balls.map((b,i)=>b.label).join("  ") :
+    "No balls yet";
+  $("status").textContent=match.done ?
+    "Innings complete" : "Match in progress";
+}
+
+async function save(){
+  render();
+  if(!matchId){
+    $("status").textContent="Local match — not online";
+    return;
+  }
+  try{
+    await update(ref(db,"matches/"+matchId),{
+      data:match,updatedAt:Date.now()
+    });
+    $("status").textContent="Saved online ✓";
+  }catch(e){
+    $("status").textContent="Save error: "+e.message;
+  }
+}
+
+function listen(id){
+  if(stopListen)stopListen();
+  matchId=id;
+  stopListen=onValue(ref(db,"matches/"+id),snap=>{
+    if(!snap.exists()){
+      $("status").textContent="Match not found";
+      return;
+    }
+    remoteUpdate=true;
+    match=snap.val().data;
+    history=[];
+    render();
+    $("status").textContent="Live score connected";
+    remoteUpdate=false;
+  },e=>{
+    $("status").textContent="Database error: "+e.message;
+  });
+}
+
+$("start").onclick=async()=>{
+  const bat=$("batTeam").value.trim();
+  const bowl=$("bowlTeam").value.trim();
+  if(!bat||!bowl||bat===bowl){
+    alert("Enter two different team names");return;
+  }
+  match=freshMatch(bat,bowl,Number($("maxOvers").value));
+  history=[];
+  try{
+    const id=crypto.randomUUID().replaceAll("-","").slice(0,12);
+    await set(ref(db,"matches/"+id),{
+      data:match,createdAt:Date.now()
+    });
+    listen(id);
+    history=[];
+    render();
+  }catch(e){
+    matchId=null;
+    render();
+    $("status").textContent="Firebase save failed: "+e.message;
+  }
+};
+
+$("openMatch").onclick=()=>{
+  const id=$("openId").value.trim();
+  if(id)listen(id);
+};
+
+function record(label,batRuns,extraRuns=0,legal=true,isWicket=false){
+  if(!match||match.done||remoteUpdate)return;
+  history.push(snapshot());
+  match.striker=$("striker").value.trim()||match.striker;
+  match.non=$("non").value.trim()||match.non;
+  match.bowler=$("bowler").value.trim()||match.bowler;
+  match.runs+=batRuns+extraRuns;
+  match.extras+=extraRuns;
+  if(legal)match.legal++;
+  if(isWicket)match.wickets++;
+  match.balls.push({label,runs:batRuns+extraRuns,
+    legal,wicket:isWicket});
+  if(legal && batRuns%2===1){
+    [match.striker,match.non]=[match.non,match.striker];
+  }
+  if(match.legal>=match.maxOvers*6||match.wickets>=10){
+    match.done=true;
+  }
+  if(legal && match.legal%6===0 && !match.done){
+    [match.striker,match.non]=[match.non,match.striker];
+  }
+  save();
+}
+
+document.querySelectorAll("[data-run]").forEach(btn=>{
+  btn.onclick=()=>record(btn.dataset.run,
+    Number(btn.dataset.run),0,true,false);
+});
+
+document.querySelectorAll("[data-extra]").forEach(btn=>{
+  btn.onclick=()=>{
+    const type=btn.dataset.extra;
+    if(type==="wide")record("Wd",0,1,false,false);
+    if(type==="noball")record("Nb",0,1,false,false);
+    if(type==="bye")record("B",0,1,true,false);
+    if(type==="legbye")record("Lb",0,1,true,false);
+  };
+});
+
+$("wicket").onclick=()=>{
+  if(!match||match.done)return;
+  const how=prompt("Dismissal? (Bowled, Caught, LBW, Run out)", "Bowled");
+  if(how===null)return;
+  record("W ("+how+")",0,0,true,true);
+};
+
+$("undo").onclick=()=>{
+  if(!match||!history.length)return;
+  match=history.pop();
+  save();
+};
+
+$("swap").onclick=()=>{
+  if(!match)return;
+  history.push(snapshot());
+  [match.striker,match.non]=[match.non,match.striker];
+  save();
+};
+
+$("share").onclick=async()=>{
+  if(!matchId){alert("Start an online match first");return;}
+  const url=new URL(location.href);
+  url.searchParams.set("match",matchId);
+  try{
+    await navigator.clipboard.writeText(url.href);
+    alert("Match link copied:\n"+url.href);
+  }catch{
+    prompt("Copy this match link:",url.href);
+  }
+};
+
+$("refresh").onclick=()=>render();
+
+$("newMatch").onclick=()=>{
+  if(stopListen)stopListen();
+  match=null;matchId=null;history=[];
+  $("match").classList.add("hidden");
+  $("setup").classList.remove("hidden");
+};
+
+const sharedId=new URLSearchParams(location.search).get("match");
+if(sharedId){
+  $("openId").value=sharedId;
+  listen(sharedId);
+}
+</script>
+</body>
+                          </html>
+  
